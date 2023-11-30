@@ -1,7 +1,10 @@
 package lookup
 
 import (
+	"bytes"
 	"image"
+	"io/fs"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -55,6 +58,67 @@ func (o *OCR) LoadFont(fontPath string) error {
 	fontFamily, err := loadFont(fontPath)
 	if err != nil {
 		return err
+	}
+
+	familyName := filepath.Base(fontPath)
+	family, ok := o.fontFamilies[familyName]
+	if !ok {
+		family = make([]*fontSymbol, 0, len(fontFamily))
+	}
+
+	family = append(family, fontFamily...)
+	o.fontFamilies[familyName] = family
+
+	o.updateAllSymbols()
+	return nil
+}
+
+// LoadFont loads a specific fontset from the given folder. Fonts are simple image files
+// containing a PNG/JPEG of the font, and named after the "letter" represented by the image.
+//
+// This can be called multiple times, with different folders, to load different fontsets.
+func (o *OCR) LoadFontFromFs(fss fs.FS, fontPath string) error {
+	if _, err := fs.Stat(fss, fontPath); err == fs.ErrNotExist {
+		return err
+	}
+
+	fontFamily := make([]*fontSymbol, 0)
+	{
+		files, err := fs.ReadDir(fss, fontPath)
+		if err != nil {
+			return err
+		}
+
+		for _, f := range files {
+			if f.IsDir() || strings.HasPrefix(f.Name(), ".") {
+				continue
+			}
+
+			imageFile, err := fs.ReadFile(fss, fontPath+"/"+f.Name())
+			if err != nil {
+				return err
+			}
+
+			img, _, err := image.Decode(bytes.NewReader(imageFile))
+			if err != nil {
+				return err
+			}
+
+			symbolName, err := url.QueryUnescape(f.Name())
+
+			if err != nil {
+				return err
+			}
+
+			symbolName = strings.Replace(symbolName, "\u200b", "", -1) // Remove zero width spaces
+
+			fSymbol := newFontSymbol(
+				strings.TrimSuffix(symbolName, ".png"),
+				ensureGrayScale(img),
+			)
+
+			fontFamily = append(fontFamily, fSymbol)
+		}
 	}
 
 	familyName := filepath.Base(fontPath)
